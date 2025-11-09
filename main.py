@@ -1,10 +1,9 @@
-# main.py
+# main_opening_momentum.py
+import pandas as pd
 from pathlib import Path
-from config import (BacktestConfig, DataConfig, StrategyConfig, 
-                   OrderConfig, PositionConfig, CostConfig, ChartConfig)
+from config import BacktestConfig, DataConfig
 from csv_data_loader import CSVDataLoader
-from data_aggregator import DataAggregator
-from strategy_engine import StrategyEngine
+from opening_momentum_strategy import OpeningMomentumStrategy
 from order_simulator import OrderSimulator
 from position_manager import PositionManager
 from cost_calculator import CostCalculator
@@ -12,133 +11,185 @@ from pnl_tracker import PnLTracker
 from performance_analyzer import PerformanceAnalyzer
 from report_generator import ReportGenerator
 
-def main():
-    # ======================
-    # 配置
-    # ======================
-    csv_file = Path(r"E:\school\4998\crawler\stock\AAPL_1m_20251107.csv")
-    output_folder = Path(r"E:\school\4998\backtesting\test")
-    output_folder.mkdir(parents=True, exist_ok=True)
+
+def run_opening_momentum_backtest(config: BacktestConfig = None):
+    """
+    Run Opening Momentum Breakout Strategy Backtest on 1-minute data
     
-    # 初始化配置
-    config = BacktestConfig(
-        data=DataConfig(timeframe='15min'),
-        strategy=StrategyConfig(buy_threshold=0.95, sell_threshold=1.05),
-        order=OrderConfig(slippage_pct=0.001),
-        position=PositionConfig(position_type='fixed_capital', capital_pct=0.95, initial_capital=100000),
-        cost=CostConfig(commission_type='percentage', commission_pct=0.001),
-        chart=ChartConfig()
-    )
+    Args:
+        config: BacktestConfig instance. If None, uses default
+    """
+    if config is None:
+        config = BacktestConfig()
+        # Override to use 1min timeframe
+        config.data.timeframe = '1min'
     
-    # ======================
-    # 1. 加载1分钟数据
-    # ======================
-    print("\n=== LOADING 1M DATA ===")
+    print("=" * 80)
+    print("開盤動能突破策略回測 (Opening Momentum Breakout Strategy Backtest)")
+    print("=" * 80)
+    
+    # ========== Step 1: Load Data ==========
+    print("\n[1/7] Loading 1-minute data...")
     loader = CSVDataLoader()
-    df_1min = loader.load_1m_data(csv_file)
-    ticker, _ = loader.extract_metadata(csv_file)
-    print(f"Loaded {len(df_1min)} 1m bars for {ticker}")
+    df_1min = loader.load_1m_data(config.path.csv_file)
+    ticker, _ = loader.extract_metadata(config.path.csv_file)
+    print(f"✓ Loaded {len(df_1min)} bars for {ticker}")
+    print(f"  Date range: {df_1min.index[0]} to {df_1min.index[-1]}")
     
-    # ======================
-    # 2. 重采样到目标时间框架
-    # ======================
-    print(f"\n=== RESAMPLING TO {config.data.timeframe} ===")
-    aggregator = DataAggregator()
-    df_tf = aggregator.resample_to_timeframe(df_1min, config.data.timeframe)
-    print(f"Resampled to {len(df_tf)} bars")
+    # ========== Step 2: Initialize Strategy ==========
+    print("\n[2/7] Initializing strategy...")
+    strategy = OpeningMomentumStrategy(
+        opening_range_minutes=30,    # First 30 minutes define opening range
+        volume_threshold=1.5,         # Volume must be 1.5x average
+        breakout_threshold=0.002,     # 0.2% above opening high
+        profit_target_pct=0.01,       # 1% profit target
+        stop_loss_pct=0.005           # 0.5% stop loss
+    )
+    print(f"✓ Strategy: {strategy.get_strategy_name()}")
+    print(f"  Parameters: {strategy.get_parameters()}")
     
-    # ======================
-    # 3. 生成策略信号
-    # ======================
-    print("\n=== GENERATING SIGNALS ===")
-    strategy = StrategyEngine(config.strategy)
-    df_tf = strategy.generate_signals(df_tf)
-    signal_count = (df_tf['Signal'] != 0).sum()
-    print(f"Generated {signal_count} signals")
+    # ========== Step 3: Generate Signals ==========
+    print("\n[3/7] Generating trading signals...")
+    df_with_signals = strategy.calculate_signals(df_1min)
     
-    # ======================
-    # 4. 初始化组件
-    # ======================
+    buy_signals = (df_with_signals['Signal'] == 1).sum()
+    sell_signals = (df_with_signals['Signal'] == -1).sum()
+    print(f"✓ Generated signals: {buy_signals} BUY, {sell_signals} SELL")
+    
+    # ========== Step 4: Initialize Components ==========
+    print("\n[4/7] Initializing backtest components...")
     order_sim = OrderSimulator(df_1min, config.order)
     position_mgr = PositionManager(config.position)
     cost_calc = CostCalculator(config.cost)
     pnl_tracker = PnLTracker()
     perf_analyzer = PerformanceAnalyzer(config.position.initial_capital)
+    print(f"✓ Initial capital: ${config.position.initial_capital:,.2f}")
     
-    # ======================
-    # 5. 回测循环
-    # ======================
-    print("\n=== RUNNING BACKTEST ===")
-    for i, (timestamp, row) in enumerate(df_tf.iterrows()):
-        signal = int(row['Signal'])
-        
-        if signal != 0:
-            # 计算仓位大小
-            shares = position_mgr.calculate_position_size(row['Close'], signal)
-            
-            if shares > 0:
-                # 模拟订单执行
-                order_result = order_sim.simulate_order(timestamp, signal, shares)
-                
-                if order_result:
-                    # 计算成本
-                    costs = cost_calc.calculate_total_cost(
-                        order_result, row['bid'], row['ask']
-                    )
-                    
-                    # 更新持仓
-                    position_mgr.update_position(order_result, costs['commission'])
-                    
-                    # 记录交易
-                    entry_price = position_mgr.avg_cost if signal == -1 else None
-                    pnl_tracker.record_trade(order_result, costs, entry_price)
-                    
-                    print(f"{order_result['signal_type']} executed: "
-                          f"{order_result['filled_shares']} shares @ "
-                          f"${order_result['execution_price']:.2f} "
-                          f"(cost: ${costs['total_cost']:.2f})")
-        
-        # 更新权益曲线
-        current_equity = position_mgr.get_equity(row['Close'])
-        perf_analyzer.update_equity(timestamp, current_equity)
+    # ========== Step 5: Execute Backtest ==========
+    print("\n[5/7] Executing backtest...")
+    signal_times = df_with_signals[df_with_signals['Signal'] != 0].index
     
-    # ======================
-    # 6. 性能分析
-    # ======================
-    print("\n=== CALCULATING PERFORMANCE ===")
+    executed_trades = 0
+    entry_price = None
+    
+    for signal_time in signal_times:
+        signal_type = df_with_signals.loc[signal_time, 'Signal']
+        current_price = df_with_signals.loc[signal_time, 'Close']
+        
+        # Update equity
+        equity = position_mgr.get_equity(current_price)
+        perf_analyzer.update_equity(signal_time, equity)
+        
+        # Calculate position size
+        shares = position_mgr.calculate_position_size(current_price, signal_type)
+        
+        if shares == 0:
+            continue
+        
+        # Simulate order execution
+        order_result = order_sim.simulate_order(signal_time, signal_type, shares)
+        
+        if order_result is None:
+            continue
+        
+        # Calculate costs
+        bid = df_1min.loc[order_result['execution_time'], 'bid']
+        ask = df_1min.loc[order_result['execution_time'], 'ask']
+        costs = cost_calc.calculate_total_cost(order_result, bid, ask)
+        
+        # Update position
+        position_mgr.update_position(order_result, costs['commission'])
+        
+        # Track P&L
+        if signal_type == 1:  # BUY
+            entry_price = order_result['execution_price']
+            pnl_tracker.record_trade(order_result, costs)
+        else:  # SELL
+            pnl_tracker.record_trade(order_result, costs, entry_price)
+            entry_price = None
+        
+        executed_trades += 1
+    
+    print(f"✓ Executed {executed_trades} trades")
+    
+    # Final equity update
+    final_price = df_1min['Close'].iloc[-1]
+    final_equity = position_mgr.get_equity(final_price)
+    perf_analyzer.update_equity(df_1min.index[-1], final_equity)
+    
+    # ========== Step 6: Calculate Performance Metrics ==========
+    print("\n[6/7] Calculating performance metrics...")
     trades_df = pnl_tracker.get_trades_df()
     metrics = perf_analyzer.calculate_metrics(trades_df)
     
-    print("\n=== PERFORMANCE METRICS ===")
-    for key, value in metrics.items():
-        if 'pct' in key or 'ratio' in key:
-            print(f"{key}: {value:.2f}")
-        else:
-            print(f"{key}: {value}")
+    print(f"\n{'─' * 60}")
+    print("Performance Summary:")
+    print(f"{'─' * 60}")
+    print(f"  Initial Capital:    ${metrics['initial_capital']:>12,.2f}")
+    print(f"  Final Equity:       ${metrics['final_equity']:>12,.2f}")
+    print(f"  Total Return:       {metrics['total_return_pct']:>12.2f}%")
+    print(f"  Annual Return:      {metrics['annual_return_pct']:>12.2f}%")
+    print(f"  Max Drawdown:       {metrics['max_drawdown_pct']:>12.2f}%")
+    print(f"  Sharpe Ratio:       {metrics['sharpe_ratio']:>12.2f}")
+    print(f"  Win Rate:           {metrics['win_rate_pct']:>12.2f}%")
+    print(f"  Total Trades:       {metrics['total_trades']:>12}")
+    print(f"  Realized P&L:       ${pnl_tracker.get_realized_pnl():>12,.2f}")
+    print(f"{'─' * 60}")
     
-    # ======================
-    # 7. 生成报告
-    # ======================
-    print("\n=== GENERATING REPORTS ===")
+    # ========== Step 7: Generate Reports ==========
+    print("\n[7/7] Generating reports...")
     report_gen = ReportGenerator(config.chart)
     
-    # 保存交易明细
-    report_gen.save_trades_csv(trades_df, output_folder / f"{ticker}_trades.csv")
+    # Save trades CSV
+    trades_output = config.path.output_folder / f"{ticker}_{strategy.get_strategy_name()}_trades.csv"
+    report_gen.save_trades_csv(trades_df, trades_output)
     
-    # 保存性能报告
-    report_gen.generate_html_report(metrics, output_folder / f"{ticker}_performance.html")
-    
-    # 绘制权益曲线
+    # Save equity curve CSV
     equity_df = perf_analyzer.get_equity_df()
-    report_gen.plot_equity_curve(equity_df, output_folder / f"{ticker}_equity_curve.png")
+    equity_output = config.path.output_folder / f"{ticker}_{strategy.get_strategy_name()}_equity.csv"
+    equity_df.to_csv(equity_output, index=False)
+    print(f"Equity curve saved: {equity_output}")
     
-    # 绘制价格图表
-    title = f"{ticker} {config.data.timeframe} Chart with Signals"
-    report_gen.plot_price_chart_with_signals(
-        df_tf, trades_df, output_folder / f"{ticker}_chart.png", title
-    )
+    # Generate price chart with signals
+    chart_output = config.path.output_folder / f"{ticker}_{strategy.get_strategy_name()}_chart.png"
+    try:
+        report_gen.plot_price_chart_with_signals(
+            df=df_with_signals,
+            trades_df=trades_df,
+            output_path=chart_output,
+            title=f"{ticker} - {strategy.get_strategy_name()} - 1min Chart"
+        )
+    except Exception as e:
+        print(f"Warning: Chart generation failed: {e}")
     
-    print("\n=== BACKTEST COMPLETE ===")
+    # Generate HTML performance report
+    html_output = config.path.output_folder / f"{ticker}_{strategy.get_strategy_name()}_report.html"
+    report_gen.generate_html_report(metrics, html_output, 
+                                    title=f"{ticker} - Opening Momentum Strategy Report")
+    
+    print("\n" + "=" * 80)
+    print("✓ Backtest completed successfully!")
+    print(f"✓ All reports saved to: {config.path.output_folder}")
+    print("=" * 80)
+    
+    return {
+        'metrics': metrics,
+        'trades_df': trades_df,
+        'equity_df': equity_df,
+        'df_with_signals': df_with_signals
+    }
+
 
 if __name__ == "__main__":
-    main()
+    # Create custom config
+    config = BacktestConfig()
+    config.data.timeframe = '1min'  # Use 1-minute data
+    config.position.initial_capital = 100000.0
+    config.position.capital_pct = 0.95  # Use 95% of capital per trade
+    config.order.slippage_pct = 0.001  # 0.1% slippage
+    config.cost.commission_pct = 0.001  # 0.1% commission
+    
+    # Run backtest
+    results = run_opening_momentum_backtest(config)
+    
+    print("\n✓ Backtest finished. Check the output folder for detailed reports.")

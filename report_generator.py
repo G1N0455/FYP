@@ -28,45 +28,68 @@ class ReportGenerator:
         """保存性能报告（别名方法）"""
         self.generate_html_report(metrics, output_path)
     
-    def _make_signal_markers(self, df: pd.DataFrame) -> list:
+    def _make_signal_markers(self, df: pd.DataFrame, trades_df: pd.DataFrame) -> list:
         """
         Create mplfinance addplot objects for buy/sell signals.
-        Adapted from plotkline.py make_signal_markers function.
+        Simple approach: green dots for BUY, red dots for SELL at execution price.
+        
+        Args:
+            df: Price DataFrame with DatetimeIndex
+            trades_df: Trades DataFrame with execution_time and signal_type
+            
+        Returns:
+            List of mplfinance addplot objects
         """
         add_plots = []
-
-        # BUY signals
-        buy_mask = df['Signal'] == 1
-        if buy_mask.any():
-            buy_prices = df.loc[buy_mask, 'Low'] * self.config.buy_marker_offset
-            buy_series = pd.Series(index=df.index, dtype='float64')
-            buy_series.loc[buy_mask] = buy_prices
-
+        
+        if trades_df.empty:
+            return add_plots
+        
+        # Create empty series with same index as df
+        buy_series = pd.Series(index=df.index, dtype='float64')
+        sell_series = pd.Series(index=df.index, dtype='float64')
+        
+        # Fill in buy/sell prices at execution times
+        for idx, trade in trades_df.iterrows():
+            execution_time = trade.get('execution_time', idx)
+            signal_type = trade.get('signal_type', '')
+            execution_price = trade.get('execution_price', 0)
+            
+            # Find the closest index in df to execution_time
+            if execution_time in df.index:
+                closest_idx = execution_time
+            else:
+                # Find nearest timestamp
+                time_diffs = abs(df.index - execution_time)
+                closest_idx = df.index[time_diffs.argmin()]
+            
+            if signal_type == 'BUY':
+                buy_series.loc[closest_idx] = execution_price
+            elif signal_type == 'SELL':
+                sell_series.loc[closest_idx] = execution_price
+        
+        # Add buy signals (green dots)
+        if buy_series.notna().any():
             add_plots.append(mpf.make_addplot(
                 buy_series,
                 type='scatter',
-                marker='^',
-                markersize=120,
+                marker='o',
+                markersize=100,
                 color='lime',
                 label='BUY'
             ))
-
-        # SELL signals
-        sell_mask = df['Signal'] == -1
-        if sell_mask.any():
-            sell_prices = df.loc[sell_mask, 'High'] * self.config.sell_marker_offset
-            sell_series = pd.Series(index=df.index, dtype='float64')
-            sell_series.loc[sell_mask] = sell_prices
-
+        
+        # Add sell signals (red dots)
+        if sell_series.notna().any():
             add_plots.append(mpf.make_addplot(
                 sell_series,
                 type='scatter',
-                marker='v',
-                markersize=120,
+                marker='o',
+                markersize=100,
                 color='red',
                 label='SELL'
             ))
-
+        
         return add_plots
     
     def plot_price_chart_with_signals(
@@ -79,19 +102,6 @@ class ReportGenerator:
         required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
         if not all(col in df.columns for col in required_cols):
             raise ValueError(f"DataFrame must contain columns: {required_cols}")
-        
-        # 添加Signal列（如果不存在）
-        if 'Signal' not in df.columns:
-            df['Signal'] = 0
-            
-            # 从trades_df映射信号
-            if not trades_df.empty and 'signal_type' in trades_df.columns:
-                for idx, row in trades_df.iterrows():
-                    if idx in df.index:
-                        if row['signal_type'] == 'BUY':
-                            df.loc[idx, 'Signal'] = 1
-                        elif row['signal_type'] == 'SELL':
-                            df.loc[idx, 'Signal'] = -1
         
         # 确定图表类型（基于数据点数量）
         num_candles = len(df)
@@ -113,12 +123,12 @@ class ReportGenerator:
             gridcolor='lightgray'
         )
         
-        # 生成信号标记
-        signal_plots = self._make_signal_markers(df)
+        # 生成信号标记 (pass trades_df to the method)
+        signal_plots = self._make_signal_markers(df, trades_df)
         
         # 绘制图表
         plot_kwargs = dict(
-            type=chart_type,  # Use dynamic chart type
+            type=chart_type,
             style=style,
             title=title,
             volume=self.config.volume,
