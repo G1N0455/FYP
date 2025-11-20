@@ -6,8 +6,8 @@ from typing import Literal
 @dataclass
 class PathConfig:
     """路径配置"""
-    csv_file: Path = Path(r"E:\school\4998\crawler\stock\AAPL_1m_20251107.csv")
-    output_folder: Path = Path(r"E:\school\4998\backtesting\test")
+    csv_file: Path = Path(r"E:\school\4998\backtesting\v2\crawler\stock\AAPL_1m_20251107.csv")
+    output_folder: Path = Path(r"E:\school\4998\backtesting\v2\test_output")
     
     def __post_init__(self):
         """确保输出文件夹存在"""

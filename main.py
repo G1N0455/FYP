@@ -1,9 +1,11 @@
-# main_opening_momentum.py
+# main.py (just update the strategy selection part)
 import pandas as pd
 from pathlib import Path
 from config import BacktestConfig, DataConfig
 from csv_data_loader import CSVDataLoader
 from opening_momentum_strategy import OpeningMomentumStrategy
+from intraday_mean_reversion_strategy import IntradayMeanReversionStrategy
+from momentum_breakout_strategy import MomentumBreakoutStrategy  # Add this import
 from order_simulator import OrderSimulator
 from position_manager import PositionManager
 from cost_calculator import CostCalculator
@@ -11,12 +13,18 @@ from pnl_tracker import PnLTracker
 from performance_analyzer import PerformanceAnalyzer
 from report_generator import ReportGenerator
 
+# ========== STRATEGY SELECTION VARIABLE ==========
+# Change this variable to select which strategy to run:
+# Options: 'opening_momentum', 'mean_reversion', 'momentum_breakout'
+SELECTED_STRATEGY = 'momentum_breakout'  # ← CHANGE THIS LINE TO SWITCH STRATEGIES
+# =================================================
 
-def run_opening_momentum_backtest(config: BacktestConfig = None):
+def run_backtest(strategy_type: str = SELECTED_STRATEGY, config: BacktestConfig = None):
     """
-    Run Opening Momentum Breakout Strategy Backtest on 1-minute data
+    Run backtest for specified strategy on 1-minute data
     
     Args:
+        strategy_type: 'opening_momentum', 'mean_reversion', or 'momentum_breakout'
         config: BacktestConfig instance. If None, uses default
     """
     if config is None:
@@ -24,8 +32,14 @@ def run_opening_momentum_backtest(config: BacktestConfig = None):
         # Override to use 1min timeframe
         config.data.timeframe = '1min'
     
+    strategy_names = {
+        'opening_momentum': '开盘认知突破策略',
+        'mean_reversion': '日内均值回归策略',
+        'momentum_breakout': '动量突破策略'
+    }
+    
     print("=" * 80)
-    print("開盤動能突破策略回測 (Opening Momentum Breakout Strategy Backtest)")
+    print(f"{strategy_names[strategy_type]}回测 ({strategy_type.replace('_', ' ').title()} Strategy Backtest)")
     print("=" * 80)
     
     # ========== Step 1: Load Data ==========
@@ -38,13 +52,30 @@ def run_opening_momentum_backtest(config: BacktestConfig = None):
     
     # ========== Step 2: Initialize Strategy ==========
     print("\n[2/7] Initializing strategy...")
-    strategy = OpeningMomentumStrategy(
-        opening_range_minutes=30,    # First 30 minutes define opening range
-        volume_threshold=1.5,         # Volume must be 1.5x average
-        breakout_threshold=0.002,     # 0.2% above opening high
-        profit_target_pct=0.01,       # 1% profit target
-        stop_loss_pct=0.005           # 0.5% stop loss
-    )
+    if strategy_type == 'opening_momentum':
+        strategy = OpeningMomentumStrategy(
+            opening_range_minutes=30,    # First 30 minutes define opening range
+            volume_threshold=1.5,         # Volume must be 1.5x average
+            breakout_threshold=0.002,     # 0.2% above opening high
+            profit_target_pct=0.01,       # 1% profit target
+            stop_loss_pct=0.005           # 0.5% stop loss
+        )
+    elif strategy_type == 'mean_reversion':
+        strategy = IntradayMeanReversionStrategy(
+            period=20,                    # 20-period moving average
+            std_multiplier=2.0,           # 2 standard deviations
+            profit_target_pct=0.01,       # 1% profit target
+            stop_loss_pct=0.005           # 0.5% stop loss
+        )
+    else:  # momentum_breakout
+        strategy = MomentumBreakoutStrategy(
+            lookback_period=10,           # 10-minute momentum lookback
+            momentum_threshold=0.003,     # 0.3% momentum threshold
+            volume_multiplier=1.5,        # 1.5x volume surge
+            profit_target_pct=0.008,      # 0.8% profit target
+            stop_loss_pct=0.004           # 0.4% stop loss
+        )
+    
     print(f"✓ Strategy: {strategy.get_strategy_name()}")
     print(f"  Parameters: {strategy.get_parameters()}")
     
@@ -165,7 +196,7 @@ def run_opening_momentum_backtest(config: BacktestConfig = None):
     # Generate HTML performance report
     html_output = config.path.output_folder / f"{ticker}_{strategy.get_strategy_name()}_report.html"
     report_gen.generate_html_report(metrics, html_output, 
-                                    title=f"{ticker} - Opening Momentum Strategy Report")
+                                    title=f"{ticker} - {strategy.get_strategy_name()} Report")
     
     print("\n" + "=" * 80)
     print("✓ Backtest completed successfully!")
@@ -189,7 +220,8 @@ if __name__ == "__main__":
     config.order.slippage_pct = 0.001  # 0.1% slippage
     config.cost.commission_pct = 0.001  # 0.1% commission
     
-    # Run backtest
-    results = run_opening_momentum_backtest(config)
+    # Run only the selected strategy
+    print(f"Running {SELECTED_STRATEGY.replace('_', ' ').title()} Strategy...")
+    results = run_backtest(SELECTED_STRATEGY, config)
     
-    print("\n✓ Backtest finished. Check the output folder for detailed reports.")
+    print(f"\n✓ {SELECTED_STRATEGY.replace('_', ' ').title()} backtest finished. Check the output folder for detailed reports.")
